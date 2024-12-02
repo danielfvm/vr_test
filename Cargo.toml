@@ -1,0 +1,18 @@
+[package]
+name = "vr_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.14.2"
+bevy_mod_openxr = "0.1.0-rc2"
+bevy_oxr = "0.3.0"
+bevy_xr_utils = "0.1.0-rc2"
+bevy_rapier3d = { version = "*", features = [ "simd-stable", "debug-render-3d" ] }
+bevy-tnua = "0.20.0"
+bevy-tnua-rapier3d = "0.7.0"
+bevy_mod_xr = "0.1.0-rc2"
+
+# Add this to your Cargo.toml
+[profile.dev.package.bevy_rapier3d]
+opt-level = 3
