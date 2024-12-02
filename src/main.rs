@@ -3,24 +3,34 @@ use bevy::{
     prelude::*,
     window::{CursorGrabMode, PrimaryWindow},
 };
-use bevy_mod_openxr::add_xr_plugins;
+use bevy_mod_openxr::{add_xr_plugins, resources::OxrViews};
 use bevy_mod_xr::session::XrTrackingRoot;
+use bevy_oxr::xr_input::QuatConv;
 use bevy_rapier3d::prelude::*;
 use bevy_tnua::prelude::*;
 use bevy_tnua_rapier3d::*;
+use bevy_xr_utils::xr_utils_actions::{
+    ActiveSet, XRUtilsAction, XRUtilsActionSet, XRUtilsActionState, XRUtilsActionSystemSet,
+    XRUtilsActionsPlugin, XRUtilsBinding,
+};
 
 fn main() {
     App::new()
         .add_plugins(add_xr_plugins(DefaultPlugins))
         .add_plugins(bevy_xr_utils::hand_gizmos::HandGizmosPlugin)
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        //     .add_plugins(RapierDebugRenderPlugin::default())
+        .add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(TnuaControllerPlugin::default())
         .add_plugins(TnuaRapier3dPlugin::default())
+        .add_systems(
+            Startup,
+            create_action_entities.before(XRUtilsActionSystemSet::CreateEvents),
+        )
+        .add_plugins(XRUtilsActionsPlugin)
         .add_systems(Startup, (setup, cursor_grab))
         .add_systems(Update, apply_controls.in_set(TnuaUserControlsSystemSet))
         .add_systems(Update, mouse_look.in_set(TnuaUserControlsSystemSet))
-        .add_systems(Update, move_oxr)
+        .add_systems(Update, apply_oxr_controls.in_set(TnuaUserControlsSystemSet))
         .insert_resource(MouseSettings {
             sensitivity: 0.04,
             pitch_limit: 90.0,
@@ -79,19 +89,23 @@ fn setup(
         transform: Transform::from_xyz(-1.5, 1.5, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     });*/
-    commands
+    let camera = commands
         .spawn(Camera3dBundle {
-            transform: Transform::from_xyz(0.0, 4.0, 2.0),
+            transform: Transform::from_xyz(0.0, 0.0, 0.0),
             ..default()
         })
-        .insert(RigidBody::Dynamic)
+        .insert(CameraControl::default())
+        .id();
+
+    commands
+        .spawn(RigidBody::Dynamic)
         .insert(Collider::capsule_y(0.5, 0.5))
         .insert(TransformBundle::from(Transform::from_xyz(0.0, 4.0, 2.0)))
         .insert(LockedAxes::ROTATION_LOCKED)
         .insert(TnuaControllerBundle::default())
         .insert(TnuaRapier3dSensorShape(Collider::cylinder(0.3, 0.0)))
         .insert(TnuaRapier3dIOBundle::default())
-        .insert(CameraControl::default());
+        .add_child(camera);
 
     // Lock the cursor to the window
     //commands.insert_resource(CursorGrabMode::Confined);
@@ -113,21 +127,115 @@ fn cursor_grab(mut q_windows: Query<&mut Window, With<PrimaryWindow>>) {
     primary_window.cursor.visible = false;
 }
 
-/* Change the position inside of a system. */
-fn move_oxr(
-    mut commands: Commands,
-    mut query: Query<&mut Transform, With<TnuaController>>,
-    mut oxr_root: Query<&mut XrTrackingRoot>,
-) {
+#[derive(Component)]
+struct FlightActionMarker;
 
+fn create_action_entities(mut commands: Commands) {
+    //create a set
+    let set = commands
+        .spawn((
+            XRUtilsActionSet {
+                name: "flight".into(),
+                pretty_name: "pretty flight set".into(),
+                priority: u32::MIN,
+            },
+            ActiveSet, //marker to indicate we want this synced
+        ))
+        .id();
+    //create an action
+    let action = commands
+        .spawn((
+            XRUtilsAction {
+                action_name: "flight_input".into(),
+                localized_name: "flight_input_localized".into(),
+                action_type: bevy_mod_xr::actions::ActionType::Vector,
+            },
+            FlightActionMarker, //lets try a marker component
+        ))
+        .id();
+
+    //create a binding
+    let binding_index = commands
+        .spawn(XRUtilsBinding {
+            profile: "/interaction_profiles/valve/index_controller".into(),
+            binding: "/user/hand/right/input/thumbstick".into(),
+        })
+        .id();
+    let binding_touch = commands
+        .spawn(XRUtilsBinding {
+            profile: "/interaction_profiles/oculus/touch_controller".into(),
+            binding: "/user/hand/right/input/thumbstick".into(),
+        })
+        .id();
+    //add action to set, this isnt the best
+    //TODO look into a better system
+    commands.entity(action).add_child(binding_index);
+    commands.entity(action).add_child(binding_touch);
+    commands.entity(set).add_child(action);
+}
+
+/* Change the position inside of a system. */
+fn apply_oxr_controls(
+    mut query: Query<(&mut Transform, &mut TnuaController)>,
+    //    mut oxr_root: Query<&mut XrTrackingRoot>,
+    action_query: Query<&XRUtilsActionState, With<FlightActionMarker>>,
+    views: ResMut<OxrViews>,
+) {
+    let Ok((mut transform, mut controller)) = query.get_single_mut() else {
+        return;
+    };
+
+    //now for the actual checking
+    for state in action_query.iter() {
+        // info!("action state is: {:?}", state);
+        match state {
+            XRUtilsActionState::Bool(_) => (),
+            XRUtilsActionState::Float(_) => (),
+            XRUtilsActionState::Vector(vector_state) => {
+                //assuming we are mapped to a vector lets fly
+                let input_vector = Vec3::new(
+                    vector_state.current_state[0],
+                    0.0,
+                    -vector_state.current_state[1],
+                );
+
+                let view = views.first();
+                match view {
+                    Some(v) => {
+                        let reference_quat = v.pose.orientation.to_quat();
+                        let locomotion_vector = reference_quat.mul_vec3(input_vector);
+                        let movement = locomotion_vector.with_y(0.0).normalize_or_zero()
+                            * input_vector.length();
+
+                        controller.basis(TnuaBuiltinWalk {
+                            // The `desired_velocity` determines how the character will move.
+                            desired_velocity: movement * 5.0,
+                            // The `float_height` must be greater (even if by little) from the distance between the
+                            // character's center and the lowest point of its collider.
+                            float_height: 1.1,
+                            // `TnuaBuiltinWalk` has many other fields for customizing the movement - but they have
+                            // sensible defaults. Refer to the `TnuaBuiltinWalk`'s documentation to learn what they do.
+                            ..Default::default()
+                        });
+                    }
+                    None => return,
+                }
+            }
+        }
+    }
 }
 
 /* Change the position inside of a system. */
 fn apply_controls(
-    mut query: Query<(&mut Transform, &mut TnuaController)>,
+    mut query: Query<&mut TnuaController>,
+    mut camera_query: Query<&mut Transform, With<CameraControl>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    let Ok((mut transform, mut controller)) = query.get_single_mut() else {
+    let Ok(mut controller) = query.get_single_mut() else {
+        return;
+    };
+
+    let Ok(mut camera_transform) = camera_query.get_single_mut() else {
         return;
     };
 
@@ -146,7 +254,7 @@ fn apply_controls(
         movement -= Vec3::X;
     }
 
-    let forward = transform.forward();
+    let forward = camera_transform.forward();
     let forward = forward.with_y(0.0).normalize();
 
     // Create a quaternion to rotate the movement vector to align with the camera's forward
