@@ -31,6 +31,7 @@ fn main() {
         .add_systems(Update, apply_controls.in_set(TnuaUserControlsSystemSet))
         .add_systems(Update, mouse_look.in_set(TnuaUserControlsSystemSet))
         .add_systems(Update, apply_oxr_controls.in_set(TnuaUserControlsSystemSet))
+       // .add_systems(Update, oxr_follow_player)
         .insert_resource(MouseSettings {
             sensitivity: 0.04,
             pitch_limit: 90.0,
@@ -43,6 +44,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut oxr_root: Query<Entity, With<XrTrackingRoot>>,
 ) {
     // circular base
     commands
@@ -105,7 +107,8 @@ fn setup(
         .insert(TnuaControllerBundle::default())
         .insert(TnuaRapier3dSensorShape(Collider::cylinder(0.3, 0.0)))
         .insert(TnuaRapier3dIOBundle::default())
-        .add_child(camera);
+        .add_child(camera)
+        .add_child(oxr_root.single());
 
     // Lock the cursor to the window
     //commands.insert_resource(CursorGrabMode::Confined);
@@ -174,6 +177,20 @@ fn create_action_entities(mut commands: Commands) {
     commands.entity(set).add_child(action);
 }
 
+/*fn oxr_follow_player(
+    mut query: Query<Entity, With<TnuaController>>,
+    mut oxr_root: Query<Entity, With<XrTrackingRoot>>,
+) {
+    let Ok(mut transform) = query.get_single_mut() else {
+        return;
+    };
+
+
+    let Ok(mut oxr_transform) = oxr_root.get_single_mut() else {
+        return;
+    };
+}*/
+
 /* Change the position inside of a system. */
 fn apply_oxr_controls(
     mut query: Query<(&mut Transform, &mut TnuaController)>,
@@ -198,6 +215,8 @@ fn apply_oxr_controls(
                     0.0,
                     -vector_state.current_state[1],
                 );
+
+            //    println!("{:?}", input_vector);
 
                 let view = views.first();
                 match view {
